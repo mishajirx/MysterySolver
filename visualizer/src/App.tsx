@@ -1,129 +1,133 @@
-
 import { useEffect, useState } from 'react';
-import * as tf from '@tensorflow/tfjs';
-import { MysteryModel } from './lib/model';
+import axios from 'axios';
 import { Hyperparameters } from './components/Hyperparameters';
-import { TrainingMonitor } from './components/TrainingMonitor';
-import { WeightVisualizer } from './components/WeightVisualizer';
+import { NetworkGraph } from './components/NetworkGraph';
+
+interface TrainingLog {
+  loss: number;
+  accuracy: number;
+}
 
 function App() {
-  const [model, setModel] = useState<MysteryModel | null>(null);
-  const [epochs, setEpochs] = useState(30);
+  const [epochs, setEpochs] = useState(1); // Epochs per step
   const [learningRate, setLearningRate] = useState(0.001);
-  const [batchSize, setBatchSize] = useState(64);
-  const [status, setStatus] = useState<'idle' | 'loading_data' | 'training'>('idle');
-  const [isTraining, setIsTraining] = useState(false);
+  const [batchSize, setBatchSize] = useState(64); // Passed but handled on backend usually
+  const [status, setStatus] = useState<'idle' | 'training'>('idle');
 
-  const [logs, setLogs] = useState<{ epoch: number, loss: number, acc: number }[]>([]);
-  const [currentWeights, setCurrentWeights] = useState<{ name: string, weights: tf.Tensor, bias: tf.Tensor }[]>([]);
+  const [logs, setLogs] = useState<TrainingLog | null>(null);
+  const [networkWeights, setNetworkWeights] = useState<any>(null);
 
-  // Keep tf tensors references to dispose if needed, though for visualization 
-  // we iterate and the visualizer will likely consume copies or arrays.
-  const initModel = async () => {
-    if (model) {
-      model.model.dispose();
+  const API_URL = 'http://localhost:8000';
+
+  const fetchWeights = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/model/weights`);
+      setNetworkWeights(res.data);
+    } catch (err) {
+      console.error("Failed to fetch weights", err);
     }
-
-    const newModel = new MysteryModel(learningRate);
-    setModel(newModel);
-    setLogs([]);
-    setCurrentWeights(newModel.getWeights());
   };
 
   useEffect(() => {
-    initModel();
-    return () => { }
+    // Initial fetch
+    fetchWeights();
   }, []);
 
-  const handleReset = () => {
-    initModel();
-    setStatus('idle');
+  const handleReset = async () => {
+    try {
+      await axios.post(`${API_URL}/reset`);
+      setStatus('idle');
+      setLogs(null);
+      fetchWeights();
+    } catch (err) {
+      console.error("Reset failed", err);
+    }
   }
 
   const handleTrain = async () => {
-    if (!model) return;
-    setStatus('loading_data');
-    setIsTraining(true);
-
-    model.compileModel(learningRate);
-
+    setStatus('training');
     try {
-      // Small timeout to allow UI to update to "Loading Data..."
-      await new Promise(r => setTimeout(r, 100));
-
-      const { xs, ys } = await model.loadCSV((p) => console.log('Parsed', p));
-
-      setStatus('training');
-
-      await model.model.fit(xs, ys, {
-        epochs: epochs,
-        batchSize: batchSize,
-        validationSplit: 0.2,
-        callbacks: {
-          onEpochEnd: (epoch, log) => {
-            if (log) {
-              setLogs(prev => [...prev, {
-                epoch: epoch + 1,
-                loss: log.loss,
-                acc: log.acc
-              }]);
-              setCurrentWeights(model.getWeights());
-            }
-            return tf.nextFrame();
-          }
-        }
+      // Run a training step
+      const res = await axios.post(`${API_URL}/train/step`, null, {
+        params: { epochs: epochs, lr: learningRate }
       });
 
-      xs.dispose();
-      ys.dispose();
+      setLogs(res.data);
+      await fetchWeights();
+
     } catch (err) {
       console.error("Training failed", err);
-      alert("Training error: " + err);
+      // alert("Training error. Is backend running?");
     } finally {
-      setIsTraining(false);
       setStatus('idle');
     }
   };
 
   return (
-    <div className="min-h-screen text-gray-100 p-8 font-sans">
+    <div className="min-h-screen text-gray-100 p-8 font-sans selection:bg-pink-500/30">
       <header className="mb-8 flex justify-between items-center bg-white/5 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-xl">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-500/20 rounded-lg">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          <div className="p-2 bg-gradient-to-tr from-purple-500/20 to-blue-500/20 rounded-lg border border-white/5">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </div>
-          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400">
-            Mystery Solver <span className="text-gray-400 font-medium">Visualizer</span>
+          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
+            Mystery Solver <span className="text-gray-500 font-medium">Network</span>
           </h1>
         </div>
-        <div className="text-xs font-mono px-3 py-1 bg-black/30 rounded-full text-blue-300 border border-blue-500/30">
-          TF.js Backend: {tf.getBackend()}
+
+        <div className="flex items-center gap-4">
+          {logs && (
+            <div className="flex gap-4 text-sm font-mono bg-black/30 px-4 py-1 rounded-full border border-white/5">
+              <span className="text-red-300">Loss: {logs.loss.toFixed(4)}</span>
+              <span className="text-green-300">Acc: {(logs.accuracy * 100).toFixed(1)}%</span>
+            </div>
+          )}
+          <div className="text-xs font-mono px-3 py-1 bg-green-900/30 rounded-full text-green-400 border border-green-500/30">
+            PyTorch Backend
+          </div>
         </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[calc(100vh-10rem)]">
-        {/* Left Sidebar: Controls & Metrics */}
-        <div className="lg:col-span-1 flex flex-col space-y-6 overflow-y-auto pr-2">
+        {/* Left Sidebar: Controls */}
+        <div className="lg:col-span-1 flex flex-col space-y-6">
           <Hyperparameters
             epochs={epochs} setEpochs={setEpochs}
             learningRate={learningRate} setLearningRate={setLearningRate}
             batchSize={batchSize} setBatchSize={setBatchSize}
             onTrain={handleTrain}
-            isTraining={isTraining}
-            status={status}
+            isTraining={status === 'training'}
+            status={status === 'training' ? 'training' : 'idle'}
             onReset={handleReset}
           />
 
-          <div className="flex-1 min-h-[300px]">
-            <TrainingMonitor logs={logs} />
+          <div className="p-6 bg-white/5 backdrop-blur-md rounded-xl border border-white/10 shadow-xl flex-1 text-sm text-gray-400">
+            <h3 className="font-bold text-gray-200 mb-2">Network Structure</h3>
+            <ul className="space-y-1 font-mono">
+              <li>Input: 205 features</li>
+              <li>Hidden 1: 512 Neurons (ReLU)</li>
+              <li>Hidden 2: 512 Neurons (ReLU)</li>
+              <li>Output: 5 Classes</li>
+            </ul>
+            <p className="mt-4 text-xs italic opacity-50">
+              Displaying a subset of neurons for clarity.
+            </p>
           </div>
         </div>
 
-        {/* Main Area: Visualizations */}
-        <div className="lg:col-span-3 h-full">
-          <WeightVisualizer weights={currentWeights} />
+        {/* Main Area: Network Graph */}
+        <div className="lg:col-span-3 h-full bg-white/5 backdrop-blur-md rounded-xl border border-white/10 shadow-xl p-1 relative overflow-hidden">
+          {networkWeights ? (
+            <NetworkGraph weights={networkWeights} />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-gray-400 animate-pulse">
+              Connecting to Backend...
+            </div>
+          )}
         </div>
       </div>
     </div>
